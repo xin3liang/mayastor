@@ -166,16 +166,16 @@ impl NvmfSubsystem {
         let sn = CString::new("33' ~'~._`o##o>").unwrap();
 
         unsafe { spdk_nvmf_subsystem_set_sn(ss.as_ptr(), sn.as_ptr()) }
-            .to_result(|e| Error::Subsystem {
-                source: Errno::from_i32(e),
+            .to_result(|_| Error::Subsystem {
+                source: Errno::EINVAL,
                 nqn: uuid.into(),
                 msg: "failed to set serial".into(),
             })?;
 
         let mn = CString::new("Mayastor NVMe controller").unwrap();
         unsafe { spdk_nvmf_subsystem_set_mn(ss.as_ptr(), mn.as_ptr()) }
-            .to_result(|e| Error::Subsystem {
-                source: Errno::from_i32(e),
+            .to_result(|_| Error::Subsystem {
+                source: Errno::EINVAL,
                 nqn: uuid.into(),
                 msg: "failed to set model number".into(),
             })?;
@@ -261,7 +261,7 @@ impl NvmfSubsystem {
             spdk_nvmf_subsystem_set_ana_reporting(self.0.as_ptr(), enable)
         }
         .to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
+            source: Errno::from_i32(e.abs()),
             nqn: self.get_nqn(),
             msg: format!("failed to set ANA reporting, enable {}", enable),
         })?;
@@ -282,7 +282,7 @@ impl NvmfSubsystem {
             )
         }
         .to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
+            source: Errno::from_i32(e.abs()),
             nqn: self.get_nqn(),
             msg: format!(
                 "failed to set controller ID range [{}, {}]",
@@ -317,7 +317,7 @@ impl NvmfSubsystem {
 
         r.await.expect("listener callback gone").to_result(|e| {
             Error::Transport {
-                source: Errno::from_i32(e),
+                source: Errno::from_i32(e.abs()),
                 msg: "Failed to add listener".to_string(),
             }
         })
@@ -357,16 +357,18 @@ impl NvmfSubsystem {
             )
         }
         .to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
+            source: Errno::from_i32(e.abs()),
             nqn: self.get_nqn(),
-            msg: "out of memory".to_string(),
+            msg: format!("subsystem_start returned: {}", e),
         })?;
 
-        r.await.unwrap().to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
-            nqn: self.get_nqn(),
-            msg: "failed to start the subsystem".to_string(),
-        })?;
+        r.await
+            .expect("Cancellation is not supported")
+            .to_result(|_| Error::Subsystem {
+                source: Errno::UnknownErrno,
+                nqn: self.get_nqn(),
+                msg: "failed to start the subsystem".to_string(),
+            })?;
 
         info!("started {:?}", self.get_nqn());
         Ok(self.get_nqn())
@@ -398,16 +400,18 @@ impl NvmfSubsystem {
             spdk_nvmf_subsystem_stop(self.0.as_ptr(), Some(stop_cb), cb_arg(s))
         }
         .to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
+            source: Errno::from_i32(e.abs()),
             nqn: self.get_nqn(),
-            msg: "out of memory".to_string(),
+            msg: format!("subsystem_stop returned: {}", e),
         })?;
 
-        r.await.unwrap().to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
-            nqn: self.get_nqn(),
-            msg: "failed to stop the subsystem".to_string(),
-        })?;
+        r.await
+            .expect("Cancellation is not supported")
+            .to_result(|_| Error::Subsystem {
+                source: Errno::UnknownErrno,
+                nqn: self.get_nqn(),
+                msg: "failed to stop the subsystem".to_string(),
+            })?;
 
         info!("stopped {}", self.get_nqn());
         Ok(())
@@ -445,16 +449,18 @@ impl NvmfSubsystem {
             )
         }
         .to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(-e),
+            source: Errno::from_i32(e.abs()),
             nqn: self.get_nqn(),
             msg: format!("subsystem_pause returned: {}", e),
         })?;
 
-        r.await.unwrap().to_result(|e| Error::Subsystem {
-            source: Errno::from_i32(e),
-            nqn: self.get_nqn(),
-            msg: "failed to pause the subsystem".to_string(),
-        })
+        r.await
+            .expect("Cancellation is not supported")
+            .to_result(|_| Error::Subsystem {
+                source: Errno::UnknownErrno,
+                nqn: self.get_nqn(),
+                msg: "failed to pause the subsystem".to_string(),
+            })
     }
 
     /// transition the subsystem to active state
@@ -479,32 +485,26 @@ impl NvmfSubsystem {
 
         let (s, r) = oneshot::channel::<i32>();
 
-        let mut rc = unsafe {
+        unsafe {
             spdk_nvmf_subsystem_resume(
                 self.0.as_ptr(),
                 Some(resume_cb),
                 cb_arg(s),
             )
-        };
-
-        if rc != 0 {
-            return Err(Error::Subsystem {
-                source: Errno::from_i32(-rc),
-                nqn: self.get_nqn(),
-                msg: format!("subsystem_resume returned: {}", rc),
-            });
         }
+        .to_result(|e| Error::Subsystem {
+            source: Errno::from_i32(e.abs()),
+            nqn: self.get_nqn(),
+            msg: format!("subsystem_resume returned: {}", e),
+        })?;
 
-        rc = r.await.unwrap();
-        if rc != 0 {
-            Err(Error::Subsystem {
+        r.await
+            .expect("Cancellation is not supported")
+            .to_result(|_| Error::Subsystem {
                 source: Errno::UnknownErrno,
                 nqn: self.get_nqn(),
                 msg: "failed to resume the subsystem".to_string(),
             })
-        } else {
-            Ok(())
-        }
     }
 
     /// get ANA state
@@ -549,7 +549,7 @@ impl NvmfSubsystem {
         r.await
             .expect("Cancellation is not supported")
             .to_result(|e| Error::Subsystem {
-                source: Errno::from_i32(-e),
+                source: Errno::from_i32(e.abs()),
                 nqn: self.get_nqn(),
                 msg: "failed to set_ana_state of the subsystem".to_string(),
             })
