@@ -238,14 +238,14 @@ pub enum Error {
     FailedGetHandle,
     #[snafu(display("Failed to create snapshot on nexus {}", name))]
     FailedCreateSnapshot { name: String, source: CoreError },
-    #[snafu(display("NVMf subsystem error: {}", e))]
-    SubsysNvmfError { e: String },
+    #[snafu(display("NVMf subsystem error: {}", source))]
+    SubsysNvmfError { source: NvmfError },
 }
 
 impl From<NvmfError> for Error {
-    fn from(error: NvmfError) -> Self {
+    fn from(source: NvmfError) -> Self {
         Error::SubsysNvmfError {
-            e: error.to_string(),
+            source,
         }
     }
 }
@@ -637,11 +637,14 @@ impl Nexus {
     pub(crate) async fn resume(&self) -> Result<(), Error> {
         if let Some(Protocol::Nvmf) = self.shared() {
             if let Some(subsystem) = NvmfSubsystem::nqn_lookup(&self.name) {
-                subsystem.resume().await.unwrap();
+                subsystem.resume().await?;
+                return Ok(());
             }
         }
 
-        Ok(())
+        Err(Error::NotSharedNvmf {
+            name: self.name.clone(),
+        })
     }
 
     /// suspend any incoming IO to the bdev pausing the controller allows us to
@@ -649,11 +652,14 @@ impl Nexus {
     pub(crate) async fn pause(&self) -> Result<(), Error> {
         if let Some(Protocol::Nvmf) = self.shared() {
             if let Some(subsystem) = NvmfSubsystem::nqn_lookup(&self.name) {
-                subsystem.pause().await.unwrap();
+                subsystem.pause().await?;
+                return Ok(());
             }
         }
 
-        Ok(())
+        Err(Error::NotSharedNvmf {
+            name: self.name.clone(),
+        })
     }
 
     /// get ANA state of the NVMe subsystem
@@ -891,7 +897,7 @@ async fn destroy_child_bdevs(name: &str, list: &[String]) {
     }
 }
 
-/// Lookup a nexus by its name (currently used only by test functions).
+/// Look up a nexus by its name
 pub fn nexus_lookup(name: &str) -> Option<&mut Nexus> {
     instances()
         .iter_mut()

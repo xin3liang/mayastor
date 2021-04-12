@@ -3,7 +3,10 @@
 use spdk_sys::spdk_bdev_module;
 
 use crate::{
-    bdev::nexus::{nexus_bdev::Nexus, nexus_fn_table::NexusFnTable},
+    bdev::{
+        nexus::{nexus_bdev::Nexus, nexus_fn_table::NexusFnTable},
+        nexus_lookup,
+    },
     core::{Bdev, Share},
     jsonrpc::{jsonrpc_register, Code, JsonRpcError, Result},
 };
@@ -45,6 +48,16 @@ struct NexusShareArgs {
 #[derive(Serialize)]
 struct NexusShareReply {
     uri: String,
+}
+
+#[derive(Deserialize)]
+struct NexusNvmfSubsystemArgs {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct NexusNvmfSubsystemReply {
+    rc: i32,
 }
 
 /// public function which simply calls register module
@@ -101,6 +114,64 @@ pub fn register_module() {
                     Err(JsonRpcError {
                         code: Code::NotFound,
                         message: "bdev not found".to_string(),
+                    })
+                }
+            };
+            Box::pin(f.boxed_local())
+        },
+    );
+
+    jsonrpc_register(
+        "nexus_nvmf_subsystem_pause",
+        |args: NexusNvmfSubsystemArgs| -> Pin<Box<dyn Future<Output = Result<NexusNvmfSubsystemReply>>>> {
+            let f = async move {
+                if let Some(nexus) = nexus_lookup(&args.name) {
+                    nexus.pause()
+                        .await
+                        .map_err(|e| {
+                            JsonRpcError {
+                                code: Code::InternalError,
+                                message: e.to_string(),
+                            }
+                        })
+                        .map(|_rc| {
+                            NexusNvmfSubsystemReply {
+                                rc: 0,
+                            }
+                        })
+                } else {
+                    Err(JsonRpcError {
+                        code: Code::NotFound,
+                        message: "nexus not found".to_string(),
+                    })
+                }
+            };
+            Box::pin(f.boxed_local())
+        },
+    );
+
+    jsonrpc_register(
+        "nexus_nvmf_subsystem_resume",
+        |args: NexusNvmfSubsystemArgs| -> Pin<Box<dyn Future<Output = Result<NexusNvmfSubsystemReply>>>> {
+            let f = async move {
+                if let Some(nexus) = nexus_lookup(&args.name) {
+                    nexus.resume()
+                        .await
+                        .map_err(|e| {
+                            JsonRpcError {
+                                code: Code::InternalError,
+                                message: e.to_string(),
+                            }
+                        })
+                        .map(|_rc| {
+                            NexusNvmfSubsystemReply {
+                                rc: 0,
+                            }
+                        })
+                } else {
+                    Err(JsonRpcError {
+                        code: Code::NotFound,
+                        message: "nexus not found".to_string(),
                     })
                 }
             };

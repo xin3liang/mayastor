@@ -20,7 +20,7 @@ use spdk_sys::{
 use crate::{
     bdev::{
         nexus::{
-            nexus_bdev::NEXUS_PRODUCT_ID,
+            nexus_bdev::{self, NEXUS_PRODUCT_ID},
             nexus_channel::{DrEvent, NexusChannel, NexusChannelInner},
         },
         nexus_lookup,
@@ -513,7 +513,15 @@ impl NexusBio {
                             child,
                         );
 
-                        nexus.pause().await.unwrap();
+                        match nexus.pause().await {
+                            Ok(_) => {}
+                            Err(nexus_bdev::Error::NotSharedNvmf {
+                                ..
+                            }) => {}
+                            Err(e) => {
+                                error!("{}: failed to pause {}", nexus, e);
+                            }
+                        }
                         nexus.reconfigure(DrEvent::ChildFault).await;
                         // TODO: an error can occur here if a separate task,
                         // e.g. grpc request is also deleting the child.
@@ -524,7 +532,15 @@ impl NexusBio {
                             );
                         }
 
-                        nexus.resume().await.unwrap();
+                        match nexus.resume().await {
+                            Ok(_) => {}
+                            Err(nexus_bdev::Error::NotSharedNvmf {
+                                ..
+                            }) => {}
+                            Err(e) => {
+                                error!("{}: failed to resume {}", nexus, e);
+                            }
+                        }
                         if nexus.status() == NexusStatus::Faulted {
                             error!(":{} has no children left... ", nexus);
                         }
