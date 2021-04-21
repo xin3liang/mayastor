@@ -107,9 +107,11 @@ pub(crate) fn nexus_submit_io(mut io: NexusBio) {
     if let Err(_e) = match io.cmd() {
         IoType::Read => io.readv(),
         // these IOs are submitted to all the underlying children
-        IoType::Write | IoType::WriteZeros | IoType::Reset | IoType::Unmap => {
-            io.submit_all()
-        }
+        IoType::Write
+        | IoType::WriteZeros
+        | IoType::Reset
+        | IoType::Unmap
+        | IoType::NvmeIo => io.submit_all(),
         IoType::Flush => {
             io.ok();
             Ok(())
@@ -429,6 +431,20 @@ impl NexusBio {
         hdl.reset(Self::child_completion, self.as_ptr().cast())
     }
 
+    #[inline(always)]
+    fn submit_nvme_io(
+        &self,
+        hdl: &dyn BlockDeviceHandle,
+    ) -> Result<(), CoreError> {
+        hdl.nvme_io(
+            &self.nvme_cmd(),
+            self.nvme_buf(),
+            self.nvme_nbytes(),
+            Self::child_completion,
+            self.as_ptr().cast(),
+        )
+    }
+
     /// Submit the IO to all underlying children, failing on the first error we
     /// find. When an IO is partially submitted -- we must wait until all
     /// the child IOs have completed before we mark the whole IO failed to
@@ -467,6 +483,17 @@ impl NexusBio {
                     })
                 })
             }
+            IoType::NvmeIo => {
+                self.inner_channel().writers.iter().try_for_each(|h| {
+                    if h.get_device().driver_name() == "nvme" {
+                        self.submit_nvme_io(&**h).map(|_| {
+                            inflight += 1;
+                        })
+                    } else {
+                        Ok(())
+                    }
+                })
+            }
             // we should never reach here, if we do it is a bug.
             _ => unreachable!(),
         }
@@ -474,7 +501,7 @@ impl NexusBio {
             // TODO: Support of IoStatus::NoMemory in ENOMEM-related errors.
             status = IoStatus::Failed;
             debug!(
-                "IO submission failed with {} already submitted IOs {}",
+                "IO submission failed with {}, already submitted IOs {}",
                 se, inflight
             );
             se

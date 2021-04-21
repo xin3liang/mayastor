@@ -12,6 +12,7 @@ use spdk_sys::{
     spdk_io_channel,
     spdk_nvme_cpl,
     spdk_nvme_ctrlr_cmd_admin_raw,
+    spdk_nvme_ctrlr_cmd_io_raw,
     spdk_nvme_dsm_range,
     spdk_nvme_ns_cmd_dataset_management,
     spdk_nvme_ns_cmd_read,
@@ -365,6 +366,10 @@ fn io_type_to_err(
             source,
             offset: offset_blocks,
             len: num_blocks,
+        },
+        IoType::NvmeIo => CoreError::NvmeIoPassthruDispatch {
+            source,
+            opcode: 0xff,
         },
         _ => {
             warn!("Unsupported I/O operation: {:?}", op);
@@ -960,6 +965,67 @@ impl BlockDeviceHandle for NvmeDeviceHandle {
         unsafe { *spdk_sys::nvme_cmd_cdw10_get(&mut cmd) = 1 };
         self.nvme_admin(&cmd, Some(&mut buf)).await?;
         Ok(buf)
+    }
+
+    fn nvme_io(
+        &self,
+        nvme_cmd: &spdk_sys::spdk_nvme_cmd,
+        buffer: *mut c_void,
+        nbytes: u64,
+        cb: IoCompletionCallback,
+        cb_arg: IoCompletionCallbackArg,
+    ) -> Result<(), CoreError> {
+        let mut pcmd = *nvme_cmd; // Make a private mutable copy of the command.
+
+        let channel = self.io_channel.as_ptr();
+        let inner = NvmeIoChannel::inner_from_channel(channel);
+
+        // Make sure channel allows I/O.
+        if inner.qpair.is_none() {
+            return Err(CoreError::NvmeIoPassthruDispatch {
+                source: Errno::ENODEV,
+                opcode: nvme_cmd.opc(),
+            });
+        }
+
+        let bio = alloc_nvme_io_ctx(
+            IoType::NvmeIo,
+            NvmeIoCtx {
+                cb,
+                cb_arg,
+                iov: std::ptr::null_mut() as *mut iovec,
+                iovcnt: 0,
+                iovpos: 0,
+                iov_offset: 0,
+                channel,
+                op: IoType::NvmeIo,
+                num_blocks: 0,
+            },
+            0,
+            0,
+        )?;
+
+        let rc = unsafe {
+            spdk_nvme_ctrlr_cmd_io_raw(
+                self.ctrlr.as_ptr(),
+                inner.qpair.as_mut().unwrap().as_ptr(),
+                &mut pcmd,
+                buffer,
+                nbytes as u32,
+                Some(nvme_io_done),
+                bio as *mut c_void,
+            )
+        };
+
+        if rc < 0 {
+            Err(CoreError::NvmeIoPassthruDispatch {
+                source: Errno::from_i32(-rc),
+                opcode: nvme_cmd.opc(),
+            })
+        } else {
+            inner.account_io();
+            Ok(())
+        }
     }
 }
 

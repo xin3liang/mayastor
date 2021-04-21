@@ -7,7 +7,10 @@ use futures::{future::Future, FutureExt};
 use spdk_sys::spdk_bdev_module;
 
 use crate::{
-    bdev::nexus::{nexus_bdev::Nexus, nexus_fn_table::NexusFnTable},
+    bdev::{
+        nexus::{nexus_bdev::Nexus, nexus_fn_table::NexusFnTable},
+        nexus_lookup,
+    },
     core::{Bdev, Share},
     jsonrpc::{jsonrpc_register, Code, JsonRpcError, Result},
 };
@@ -23,6 +26,7 @@ macro_rules! c_str {
 pub mod nexus_bdev;
 pub mod nexus_bdev_children;
 pub mod nexus_bdev_rebuild;
+pub mod nexus_bdev_reservation;
 pub mod nexus_bdev_snapshot;
 mod nexus_channel;
 pub(crate) mod nexus_child;
@@ -47,6 +51,24 @@ struct NexusShareArgs {
 #[derive(Serialize)]
 struct NexusShareReply {
     uri: String,
+}
+
+#[derive(Deserialize)]
+struct NexusResvRegisterArgs {
+    name: String,
+    current_key: u64,
+    new_key: u64,
+    register_action: u8,
+    cptpl: u8,
+}
+
+#[derive(Deserialize)]
+struct NexusResvAcquireArgs {
+    name: String,
+    current_key: u64,
+    preempt_key: u64,
+    acquire_action: u8,
+    resv_type: u8,
 }
 
 /// public function which simply calls register module
@@ -103,6 +125,64 @@ pub fn register_module() {
                     Err(JsonRpcError {
                         code: Code::NotFound,
                         message: "bdev not found".to_string(),
+                    })
+                }
+            };
+            Box::pin(f.boxed_local())
+        },
+    );
+
+    jsonrpc_register(
+        "nexus_resv_register",
+        |args: NexusResvRegisterArgs| -> Pin<Box<dyn Future<Output = Result<()>>>> {
+            let f = async move {
+                if let Some(nexus) = nexus_lookup(&args.name) {
+                    nexus.resv_register(
+                        args.current_key,
+                        args.new_key,
+                        args.register_action,
+                        args.cptpl,
+                    )
+                        .await
+                        .map_err(|e| {
+                            JsonRpcError {
+                                code: Code::InternalError,
+                                message: e.to_string(),
+                            }
+                        })
+                } else {
+                    Err(JsonRpcError {
+                        code: Code::NotFound,
+                        message: "nexus not found".to_string(),
+                    })
+                }
+            };
+            Box::pin(f.boxed_local())
+        },
+    );
+
+    jsonrpc_register(
+        "nexus_resv_acquire",
+        |args: NexusResvAcquireArgs| -> Pin<Box<dyn Future<Output = Result<()>>>> {
+            let f = async move {
+                if let Some(nexus) = nexus_lookup(&args.name) {
+                    nexus.resv_acquire(
+                        args.current_key,
+                        args.preempt_key,
+                        args.acquire_action,
+                        args.resv_type,
+                    )
+                        .await
+                        .map_err(|e| {
+                            JsonRpcError {
+                                code: Code::InternalError,
+                                message: e.to_string(),
+                            }
+                        })
+                } else {
+                    Err(JsonRpcError {
+                        code: Code::NotFound,
+                        message: "nexus not found".to_string(),
                     })
                 }
             };

@@ -13,6 +13,7 @@ use spdk_sys::{
     spdk_bdev_free_io,
     spdk_bdev_io,
     spdk_bdev_nvme_admin_passthru_ro,
+    spdk_bdev_nvme_io_passthru,
     spdk_bdev_read,
     spdk_bdev_reset,
     spdk_bdev_write,
@@ -22,6 +23,7 @@ use spdk_sys::{
 use crate::{
     core::{
         nvme_admin_opc,
+        nvme_nvm_opcode,
         Bdev,
         CoreError,
         Descriptor,
@@ -284,6 +286,105 @@ impl BdevHandle {
             Ok(())
         } else {
             Err(CoreError::NvmeAdminFailed {
+                opcode: (*nvme_cmd).opc(),
+            })
+        }
+    }
+
+    /// NVMe Reservation Register
+    /// cptpl: Change Persist Through Power Loss state
+    pub async fn nvme_resv_register(
+        &self,
+        current_key: u64,
+        new_key: u64,
+        register_action: u8,
+        cptpl: u8,
+    ) -> Result<(), CoreError> {
+        let mut cmd = spdk_sys::spdk_nvme_cmd::default();
+        cmd.set_opc(nvme_nvm_opcode::RESERVATION_REGISTER.into());
+        cmd.nsid = 0x1;
+        unsafe {
+            cmd.__bindgen_anon_1
+                .cdw10_bits
+                .resv_register
+                .set_rrega(register_action.into());
+            cmd.__bindgen_anon_1
+                .cdw10_bits
+                .resv_register
+                .set_cptpl(cptpl.into());
+        }
+        let mut buffer = self.dma_malloc(16).unwrap();
+        let (ck, nk) = buffer.as_mut_slice().split_at_mut(8);
+        ck.copy_from_slice(&current_key.to_le_bytes());
+        nk.copy_from_slice(&new_key.to_le_bytes());
+        self.io_passthru(&cmd, Some(&mut buffer)).await
+    }
+
+    /// NVMe Reservation Acquire
+    pub async fn nvme_resv_acquire(
+        &self,
+        current_key: u64,
+        preempt_key: u64,
+        acquire_action: u8,
+        resv_type: u8,
+    ) -> Result<(), CoreError> {
+        let mut cmd = spdk_sys::spdk_nvme_cmd::default();
+        cmd.set_opc(nvme_nvm_opcode::RESERVATION_ACQUIRE.into());
+        cmd.nsid = 0x1;
+        unsafe {
+            cmd.__bindgen_anon_1
+                .cdw10_bits
+                .resv_acquire
+                .set_racqa(acquire_action.into());
+            cmd.__bindgen_anon_1
+                .cdw10_bits
+                .resv_acquire
+                .set_rtype(resv_type.into());
+        }
+        let mut buffer = self.dma_malloc(16).unwrap();
+        let (ck, pk) = buffer.as_mut_slice().split_at_mut(8);
+        ck.copy_from_slice(&current_key.to_le_bytes());
+        pk.copy_from_slice(&preempt_key.to_le_bytes());
+        self.io_passthru(&cmd, Some(&mut buffer)).await
+    }
+
+    /// sends the specified NVMe IO Passthru command
+    pub async fn io_passthru(
+        &self,
+        nvme_cmd: &spdk_sys::spdk_nvme_cmd,
+        buffer: Option<&mut DmaBuf>,
+    ) -> Result<(), CoreError> {
+        trace!("Sending nvme_io_passthru {}", nvme_cmd.opc());
+        let (s, r) = oneshot::channel::<bool>();
+        let errno = unsafe {
+            spdk_bdev_nvme_io_passthru(
+                self.desc.as_ptr(),
+                self.channel.as_ptr(),
+                &*nvme_cmd,
+                match buffer {
+                    Some(ref b) => ***b,
+                    None => std::ptr::null_mut(),
+                },
+                match buffer {
+                    Some(b) => b.len(),
+                    None => 0,
+                },
+                Some(Self::io_completion_cb),
+                cb_arg(s),
+            )
+        };
+
+        if errno != 0 {
+            return Err(CoreError::NvmeIoPassthruDispatch {
+                source: Errno::from_i32(errno.abs()),
+                opcode: (*nvme_cmd).opc(),
+            });
+        }
+
+        if r.await.expect("Failed awaiting NVMe IO Passthru") {
+            Ok(())
+        } else {
+            Err(CoreError::NvmeIoPassthruFailed {
                 opcode: (*nvme_cmd).opc(),
             })
         }

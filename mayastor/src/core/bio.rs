@@ -248,21 +248,18 @@ impl Bio {
 
     /// NVMe passthru command
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn nvme_cmd(&self) -> spdk_sys::spdk_nvme_cmd {
         unsafe { self.0.as_ref().u.nvme_passthru.cmd }
     }
 
     /// raw pointer to NVMe passthru data buffer
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn nvme_buf(&self) -> *mut c_void {
         unsafe { self.0.as_ref().u.nvme_passthru.buf as *mut _ }
     }
 
     /// NVMe passthru number of bytes to transfer
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn nvme_nbytes(&self) -> u64 {
         unsafe { self.0.as_ref().u.nvme_passthru.nbytes }
     }

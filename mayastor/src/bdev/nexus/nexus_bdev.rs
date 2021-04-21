@@ -238,6 +238,18 @@ pub enum Error {
     FailedGetHandle,
     #[snafu(display("Failed to create snapshot on nexus {}", name))]
     FailedCreateSnapshot { name: String, source: CoreError },
+    #[snafu(display(
+        "Failed reservation register on nexus {}: {}",
+        name,
+        source
+    ))]
+    FailedResvRegister { name: String, source: CoreError },
+    #[snafu(display(
+        "Failed reservation acquire on nexus {}: {}",
+        name,
+        source
+    ))]
+    FailedResvAcquire { name: String, source: CoreError },
     #[snafu(display("NVMf subsystem error: {}", e))]
     SubsysNvmfError { e: String },
 }
