@@ -87,6 +87,7 @@ impl Nexus {
                 .map(|ch| ch.to_grpc())
                 .collect::<Vec<_>>(),
             rebuilds: RebuildJob::count() as u32,
+            ana_state: rpc::NvmeAnaState::NvmeAnaInvalidState as i32,
         }
     }
 }

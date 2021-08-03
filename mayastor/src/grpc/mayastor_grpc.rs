@@ -643,14 +643,25 @@ impl mayastor_server::Mayastor for MayastorSvc {
         trace!("{:?}", args);
 
         let rx = rpc_submit::<_, _, nexus_bdev::Error>(async move {
+            let mut nexus_list: Vec<NexusV2> = Vec::new();
+
+            for n in instances() {
+                if n.state.lock().deref() != &nexus_bdev::NexusState::Init {
+                    let mut o = n.to_grpc_v2();
+
+                    // Get ANA state only for published nexuses.
+                    if let Some(Protocol::Nvmf) = n.shared() {
+                        if let Ok(state) = n.get_ana_state().await {
+                            o.ana_state = state as i32;
+                        }
+                    }
+
+                    nexus_list.push(o);
+                }
+            }
+
             Ok(ListNexusV2Reply {
-                nexus_list: instances()
-                    .iter()
-                    .filter(|n| {
-                        n.state.lock().deref() != &nexus_bdev::NexusState::Init
-                    })
-                    .map(|n| n.to_grpc_v2())
-                    .collect::<Vec<_>>(),
+                nexus_list,
             })
         })?;
 
