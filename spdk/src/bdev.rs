@@ -25,7 +25,7 @@ use std::marker::PhantomData;
 /// Wrapper for SPDK `spdk_bdev` structure and related API.
 pub struct Bdev<BdevContext: BdevOps> {
     inner: NonNull<spdk_bdev>,
-    _cls: PhantomData<BdevContext>,
+    _ctx: PhantomData<BdevContext>,
 }
 
 impl<BdevContext: BdevOps> Bdev<BdevContext> {
@@ -43,7 +43,7 @@ impl<BdevContext: BdevOps> Bdev<BdevContext> {
     pub(crate) fn new(ptr: *mut spdk_bdev) -> Self {
         Self {
             inner: NonNull::new(ptr).unwrap(),
-            _cls: Default::default(),
+            _ctx: Default::default(),
         }
     }
 }

@@ -9,15 +9,14 @@ use spdk::{
     IoChannel,
     IoDevice,
     IoType,
-    Poller1,
+    Poller,
     PollerBuilder,
 };
-use std::{cell::RefCell};
-use std::rc::Rc;
+use std::{cell::RefCell, marker::PhantomData};
 
 const NULL_MODULE_NAME: &'static str = "NullNg";
 
-/// TODO
+/// Null Bdev module.
 struct NullBdevModule {}
 
 impl BdevModuleInit for NullBdevModule {
@@ -35,28 +34,35 @@ pub fn register() {
         .register();
 }
 
-//===================== IOChannel ==================================
+/// Poller context for Null Bdev.
+struct NullIoPoller<'a> {
+    iovs: RefCell<Vec<BdevIo<NullIoDevice<'a>>>>,
+}
+
+impl Drop for NullIoPoller<'_> {
+    fn drop(&mut self) {
+        dbgln!(NullIoPoller, self.iovs.borrow().len(); "drop");
+    }
+}
 
 /// Per-core channel data.
-struct NullIoChannelData {
-    _poller: Poller1<'static>,
-    iovs: Rc<RefCell<Vec<BdevIo<NullIoDevice>>>>,
-    my_poller: i64,
+struct NullIoChannelData<'a> {
+    poller: Poller<'a, NullIoPoller<'a>>,
     my_data: i64,
 }
 
-impl NullIoChannelData {
-    fn new(a: i64, b: i64) -> Self {
-        let iovs = Rc::new(RefCell::new(Vec::new()));
-        let poller_iovs = Rc::clone(&iovs);
-
+impl NullIoChannelData<'_> {
+    fn new(my_data: i64) -> Self {
         let poller = PollerBuilder::new()
             .with_interval(1000)
-            .with_poll_fn(move || {
-                let ready: Vec<_> = poller_iovs.borrow_mut().drain(..).collect();
+            .with_context(Box::new(NullIoPoller {
+                iovs: RefCell::new(Vec::new()),
+            }))
+            .with_poll_fn(|ctx| {
+                let ready: Vec<_> = ctx.iovs.borrow_mut().drain(..).collect();
                 let cnt = ready.len();
                 if cnt > 0 {
-                    dbgln!(NullIoDevice, "poller"; ">>>> poll: cnt={}", cnt);
+                    dbgln!(NullIo, "poller"; ">>>> poll: cnt={}", cnt);
                 }
                 ready.iter().for_each(|io: &BdevIo<_>| io.ok());
                 cnt as i32
@@ -64,64 +70,63 @@ impl NullIoChannelData {
             .build();
 
         let res = Self {
-            _poller: poller,
-            iovs,
-            my_poller: a,
-            my_data: b,
+            poller,
+            my_data,
         };
         dbgln!(NullIoChannelData, res.dbg(); "new");
         res
     }
 
     fn dbg(&self) -> String {
-        format!("NIO.Dat[p '{}' d '{}']", self.my_poller, self.my_data)
+        format!("NIO.Dat[d '{}']", self.my_data)
     }
 }
 
-impl Drop for NullIoChannelData {
+impl Drop for NullIoChannelData<'_> {
     fn drop(&mut self) {
         dbgln!(NullIoChannelData, self.dbg(); "drop");
     }
 }
 
 /// 'Null' I/O device structure.
-struct NullIoDevice {
+struct NullIoDevice<'a> {
     name: String,
     smth: u64,
-    next_chan: RefCell<i64>,
+    next_chan_id: RefCell<i64>,
+    _a: PhantomData<&'a ()>,
 }
 
 /// TODO
-impl Drop for NullIoDevice {
+impl Drop for NullIoDevice<'_> {
     fn drop(&mut self) {
         dbgln!(NullIoDevice, self.dbg(); "drop");
     }
 }
 
 /// TODO
-impl IoDevice for NullIoDevice {
-    type ChannelData = NullIoChannelData;
+impl<'a> IoDevice for NullIoDevice<'a> {
+    type ChannelData = NullIoChannelData<'a>;
 
     /// TODO
-    fn io_channel_create(&self) -> NullIoChannelData {
+    fn io_channel_create(&self) -> Self::ChannelData {
         dbgln!(NullIoDevice, self.dbg(); "io_channel_create");
 
-        let mut x = self.next_chan.borrow_mut();
+        let mut x = self.next_chan_id.borrow_mut();
         *x += 1;
         self.get_io_device_id();
 
-        NullIoChannelData::new(123, *x)
+        Self::ChannelData::new(*x)
     }
 
     /// TODO
-    fn io_channel_destroy(&self, io_chan: NullIoChannelData) {
+    fn io_channel_destroy(&self, io_chan: Self::ChannelData) {
         dbgln!(NullIoDevice, self.dbg(); "io_channel_destroy: <{}>", io_chan.dbg());
     }
 }
 
 /// TODO
-impl BdevOps for NullIoDevice {
-    type ChannelData = NullIoChannelData;
+impl<'a> BdevOps for NullIoDevice<'a> {
+    type ChannelData = NullIoChannelData<'a>;
 
     /// TODO
     fn destruct(self: Box<Self>) {
@@ -131,8 +136,8 @@ impl BdevOps for NullIoDevice {
 
     fn submit_request(
         &self,
-        io_chan: IoChannel<NullIoChannelData>,
-        bio: BdevIo<NullIoDevice>,
+        io_chan: IoChannel<Self::ChannelData>,
+        bio: BdevIo<NullIoDevice<'a>>,
     ) {
         let chan_data = io_chan.channel_data();
 
@@ -142,8 +147,8 @@ impl BdevOps for NullIoDevice {
         match bio.io_type() {
             IoType::Read | IoType::Write => {
                 dbgln!(NullIoDevice, self.dbg(); ">>>> push BIO");
-                chan_data.iovs.borrow_mut().push(bio)
-            },
+                chan_data.poller.context().iovs.borrow_mut().push(bio)
+            }
             _ => bio.fail(),
         };
     }
@@ -156,14 +161,15 @@ impl BdevOps for NullIoDevice {
 }
 
 /// TODO
-impl NullIoDevice {
+impl<'a> NullIoDevice<'a> {
     fn create(name: &str) {
         let bm = BdevModule::find_by_name(NULL_MODULE_NAME).unwrap();
 
         let io_dev = Box::new(NullIoDevice {
             name: String::from(name),
             smth: 789,
-            next_chan: RefCell::new(10),
+            next_chan_id: RefCell::new(10),
+            _a: Default::default(),
         });
 
         let bdev = BdevBuilder::new()

@@ -5,7 +5,7 @@ use std::{marker::PhantomData, ptr::NonNull};
 /// Wrapper for SPDK `spdk_bdev_io` data structure.
 pub struct BdevIo<BdevContext: BdevOps> {
     inner: NonNull<spdk_bdev_io>,
-    _cls: PhantomData<BdevContext>,
+    _ctx: PhantomData<BdevContext>,
 }
 
 impl<BdevContext: BdevOps> BdevIo<BdevContext> {
@@ -13,7 +13,7 @@ impl<BdevContext: BdevOps> BdevIo<BdevContext> {
     pub(crate) fn new(bio: *mut spdk_bdev_io) -> Self {
         BdevIo {
             inner: NonNull::new(bio).unwrap(),
-            _cls: Default::default(),
+            _ctx: Default::default(),
         }
     }
 

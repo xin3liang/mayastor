@@ -50,5 +50,5 @@ mod bdev_io;
 pub use bdev_io::BdevIo;
 
 #[macro_use]
-mod poller1;
-pub use poller1::{Poller1, PollerBuilder};
+mod poller;
+pub use poller::{Poller, PollerBuilder};
