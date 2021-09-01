@@ -15,11 +15,20 @@ fn main() {
     }
 
     tonic_build::configure()
-        .build_server(false)
+        .build_server(true)
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile(
             &["mayastor-api/protobuf/mayastor.proto"],
             &["mayastor-api/protobuf"],
         )
         .unwrap_or_else(|e| panic!("mayastor protobuf compilation failed: {}", e));
+
+    tonic_build::configure()
+        .build_server(true)
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .compile(
+            &["mayastor-api/protobuf/csi.proto"],
+            &["mayastor-api/protobuf"],
+        )
+        .unwrap_or_else(|e| panic!("CSI protobuf compilation failed: {}", e));
 }

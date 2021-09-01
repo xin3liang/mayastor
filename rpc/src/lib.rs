@@ -1,6 +1,7 @@
 extern crate bytes;
 extern crate prost;
 extern crate prost_derive;
+extern crate prost_types;
 extern crate serde;
 extern crate serde_derive;
 extern crate serde_json;
@@ -10,6 +11,7 @@ extern crate tonic;
 #[allow(clippy::unit_arg)]
 #[allow(clippy::redundant_closure)]
 #[allow(clippy::upper_case_acronyms)]
+
 pub mod mayastor {
     use std::str::FromStr;
 
@@ -37,4 +39,8 @@ pub mod mayastor {
     }
 
     include!(concat!(env!("OUT_DIR"), "/mayastor.rs"));
+}
+
+pub mod csi {
+    include!(concat!(env!("OUT_DIR"), "/csi.v1.rs"));
 }

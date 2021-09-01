@@ -11,6 +11,7 @@ members = [
     "composer",
     "control-plane/agents",
     "control-plane/rest",
+    "control-plane/csi-controller",
     "deployer",
     "openapi",
     "rpc",
