@@ -13,9 +13,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use rpc::csi::identity_server::IdentityServer;
+use rpc::csi::{controller_server::ControllerServer, identity_server::IdentityServer};
 
-use crate::identity::CsiIdentitySvc;
+use crate::{controller::CsiControllerSvc, identity::CsiIdentitySvc};
 
 #[derive(Debug)]
 struct UnixStream(pub tokio::net::UnixStream);
@@ -96,6 +96,7 @@ impl CsiServer {
 
         Server::builder()
             .add_service(IdentityServer::new(CsiIdentitySvc::default()))
+            .add_service(ControllerServer::new(CsiControllerSvc::default()))
             .serve_with_incoming(incoming)
             .await
             .map_err(|_| "Failed to start gRPC server")?;
