@@ -754,7 +754,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "url",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -944,6 +944,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-futures",
+ "uuid 0.5.1",
 ]
 
 [[package]]
@@ -2104,7 +2105,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "url",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -2617,6 +2618,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde",
+ "serde_json",
  "serde_urlencoded",
  "tokio",
  "tokio-native-tls",
@@ -3734,6 +3736,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "uuid"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcc7e3b898aa6f6c08e5295b6c89258d1331e9ac578cc992fb818759951bdc22"
 
 [[package]]
 name = "uuid"

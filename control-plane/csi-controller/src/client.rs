@@ -1,9 +1,12 @@
-use common_lib::types::v0::openapi::models::{Node, Pool};
+use common_lib::types::v0::openapi::models::{
+    CreateVolumeBody, Node, Pool, Topology, Volume, VolumeHealPolicy,
+};
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::OnceCell;
-use reqwest::{Client, Error, Response, Url};
-use serde::Deserialize;
+use reqwest::{Client, Error, Response, StatusCode, Url};
+use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 static REST_CLIENT: OnceCell<MayastorApiClient> = OnceCell::new();
 
@@ -18,6 +21,7 @@ enum UrnType<'a> {
 }
 
 /// TODO:
+#[derive(Debug)]
 pub struct MayastorApiClient {
     base_url: String,
     rest_client: Client,
@@ -96,6 +100,58 @@ impl MayastorApiClient {
         self.rest_client.get(uri).send().await
     }
 
+    async fn do_put<I, O>(&self, urn: &UrnType<'_>, object: I) -> Result<O>
+    where
+        I: Serialize + Sized,
+        for<'a> O: Deserialize<'a>,
+    {
+        let p = match urn {
+            UrnType::Single(s) => s.to_string(),
+            UrnType::Multiple(ss) => ss.join("/"),
+        };
+
+        let u = format!("{}/{}", self.base_url, p);
+        let uri = Url::parse(&u).unwrap();
+
+        debug!("Issuing PUT for URL {}", u);
+        let response = self
+            .rest_client
+            .put(uri)
+            .json(&object)
+            .send()
+            .await
+            .map_err(|e| {
+                let m = format!("PUT {} failed, error={}", u, e);
+                error!("{}", m);
+                anyhow!(m)
+            })?;
+
+        // Check HTTP status of the operation.
+        if response.status() != StatusCode::OK {
+            return Err(anyhow!(format!(
+                "PUT {} failed with code {}",
+                u,
+                response.status()
+            )));
+        }
+
+        let body = response.bytes().await.map_err(|e| {
+            anyhow!(
+                "Failed to obtain body from HTTP PUT {} response, error = {}",
+                u,
+                e,
+            )
+        })?;
+
+        serde_json::from_slice::<O>(&body).map_err(|e| {
+            anyhow!(
+                "Failed to deserialize object {}, error = {}",
+                std::any::type_name::<O>(),
+                e
+            )
+        })
+    }
+
     async fn get_collection<R>(&self, urn: UrnType<'_>) -> Result<Vec<R>>
     where
         for<'a> R: Deserialize<'a>,
@@ -129,5 +185,29 @@ impl MayastorApiClient {
     pub async fn get_node_pools(&self, node: &str) -> Result<Vec<Pool>> {
         self.get_collection(UrnType::Multiple(&["nodes", node, "pools"]))
             .await
+    }
+
+    #[instrument]
+    pub async fn create_volume(
+        &self,
+        volume_id: &str,
+        replicas: u8,
+        size: u64,
+        allowed_nodes: Option<Vec<String>>,
+        preferred_nodes: Option<Vec<String>>,
+    ) -> Result<Volume> {
+        let mut _topology = Topology::default();
+
+        let req = CreateVolumeBody {
+            replicas,
+            size,
+            topology: _topology,
+            policy: VolumeHealPolicy::default(),
+        };
+
+        self.do_put(&UrnType::Multiple(&["volumes", volume_id]), &req)
+            .await
+
+        //Err(anyhow!("Not implemented !"))
     }
 }
