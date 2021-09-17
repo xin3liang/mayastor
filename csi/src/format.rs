@@ -30,7 +30,7 @@ pub(crate) fn prepare_device(
         .output()
         .map_err(|error| format!("failed to execute {}: {}", binary, error))?;
 
-    trace!(
+    debug!(
         "Output from {} command: {}",
         binary,
         String::from_utf8(output.stdout.clone()).unwrap()
