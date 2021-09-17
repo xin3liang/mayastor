@@ -4,7 +4,7 @@ use std::process::Command;
 
 use devinfo::blkid::probe::Probe;
 
-pub(crate) async fn prepare_device(
+pub(crate) fn prepare_device(
     device: &str,
     fstype: &str,
 ) -> Result<(), String> {
@@ -17,8 +17,8 @@ pub(crate) async fn prepare_device(
         return Err(format!("probe failed: {}", error));
     }
 
-    if let Ok(fs) = probe.lookup_value("TYPE") {
-        debug!("Found existing filesystem ({}) on device {}", fs, device);
+    if probe.has_value("TYPE") {
+        debug!("Found existing filesystem on device {}", device);
         return Ok(());
     }
 

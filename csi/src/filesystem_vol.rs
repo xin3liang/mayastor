@@ -87,7 +87,7 @@ pub async fn stage_fs_volume(
                 ));
     }
 
-    if let Err(error) = prepare_device(&device_path, &fstype).await {
+    if let Err(error) = prepare_device(&device_path, &fstype) {
         return Err(failure!(
             Code::Internal,
             "Failed to stage volume {}: error preparing device {}: {}",
