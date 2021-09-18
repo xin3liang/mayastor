@@ -139,6 +139,14 @@ pub fn filesystem_mount(
         flags.insert(MountFlags::RDONLY);
     }
 
+    debug!(
+        "Filesystem ({}) on device {} mounting onto target {} (options: {})",
+        fstype,
+        device,
+        target,
+        show(options)
+    );
+
     let mount = Mount::new(
         device,
         target,

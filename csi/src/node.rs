@@ -491,14 +491,14 @@ impl node_server::Node for Node {
                     )
                 })?;
 
-                device.fixup().await.map_err(|error| {
-                    failure!(
-                        Code::Internal,
-                        "Could not set parameters on staged device {}: {}",
-                        &msg.volume_id,
-                        error
-                    )
-                })?;
+                // device.fixup().await.map_err(|error| {
+                //     failure!(
+                //         Code::Internal,
+                //         "Could not set parameters on staged device {}: {}",
+                //         &msg.volume_id,
+                //         error
+                //     )
+                // })?;
 
                 devpath
             }
