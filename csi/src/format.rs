@@ -1,6 +1,7 @@
 //! Utility function for formatting a device with filesystem
 
 use std::process::Command;
+use std::{thread, time};
 
 use devinfo::blkid::probe::Probe;
 
@@ -35,6 +36,8 @@ pub(crate) fn prepare_device(
         binary,
         String::from_utf8(output.stdout.clone()).unwrap()
     );
+
+    thread::sleep(time::Duration::from_millis(5000));
 
     if output.status.success() {
         return Ok(());
