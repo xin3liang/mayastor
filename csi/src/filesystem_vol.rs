@@ -4,6 +4,8 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 
 use tonic::{Code, Status};
 
+use std::{thread, time};
+
 macro_rules! failure {
     (Code::$code:ident, $msg:literal) => {{ error!($msg); Status::new(Code::$code, $msg) }};
     (Code::$code:ident, $fmt:literal $(,$args:expr)+) => {{ let message = format!($fmt $(,$args)+); error!("{}", message); Status::new(Code::$code, message) }};
@@ -87,6 +89,7 @@ pub async fn stage_fs_volume(
                 ));
     }
 
+    thread::sleep(time::Duration::from_millis(2000));
     if let Err(error) = prepare_device(&device_path, &fstype) {
         return Err(failure!(
             Code::Internal,
