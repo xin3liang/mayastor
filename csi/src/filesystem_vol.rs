@@ -89,7 +89,7 @@ pub async fn stage_fs_volume(
                 ));
     }
 
-    thread::sleep(time::Duration::from_millis(2000));
+    thread::sleep(time::Duration::from_millis(2000000));
     if let Err(error) = prepare_device(&device_path, &fstype) {
         return Err(failure!(
             Code::Internal,
