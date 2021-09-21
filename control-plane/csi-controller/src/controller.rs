@@ -17,10 +17,12 @@ const VOLUME_NAME_PATTERN: &str =
     r"pvc-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
 const PROTO_NVMF: &str = "nvmf";
 const MAYASTOR_NODE_PREFIX: &str = "mayastor://";
+const MAX_VOLUMES_TO_LIST: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct CsiControllerSvc {}
 
+// TODO: Implement VolumeOpts
 mod volume_opts {
     pub const IO_TIMEOUT: &str = "ioTimeout";
     pub const LOCAL_VOLUME: &str = "local";
@@ -33,7 +35,10 @@ mod volume_opts {
     pub fn decode_local_volume_flag(encoded: Option<&String>) -> bool {
         match encoded {
             Some(v) => YAML_TRUE_VALUE.iter().any(|p| p == v),
-            None => false,
+            None => {
+                // TODO: As of now all volumes are considered local, (see CAS-1126)
+                true
+            }
         }
     }
 }
@@ -75,30 +80,14 @@ fn normalize_hostname(name: String) -> String {
     }
 }
 
-/// Get share URI for existing volume object.
-fn get_volume_share_uri(volume: &Volume) -> Result<String, Status> {
-    let volume_id = volume.spec.uuid;
-
-    match volume.state.as_ref() {
-        Some(state) => {
-            if let Some(nexus) = state.child.as_ref() {
-                if nexus.device_uri.is_empty() {
-                    let m = format!("No nexus device URI available for volume {}", volume_id);
-                    error!("{}", m);
-                    return Err(Status::internal(m));
-                }
-                Ok(nexus.device_uri.to_string())
-            } else {
-                let m = format!("No nexus info available for volume {}", volume_id);
-                error!("{}", m);
-                Err(Status::internal(m))
-            }
-        }
-        None => {
-            let m = format!("Volume {} reports no current state", volume_id);
-            Err(Status::internal(m))
-        }
-    }
+/// Get share URI for existing volume object and the node where the volume is published.
+fn get_volume_share_location(volume: &Volume) -> Option<(String, String)> {
+    volume
+        .state
+        .as_ref()?
+        .child
+        .as_ref()
+        .map(|nexus| (nexus.node.to_string(), nexus.device_uri.to_string()))
 }
 
 impl From<ApiClientError> for Status {
@@ -280,7 +269,7 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
         let pinned_volume =
             volume_opts::decode_local_volume_flag(args.parameters.get(volume_opts::LOCAL_VOLUME));
 
-        // For exaplanation of accessibilityRequirements refer to a table at
+        // For explanation of accessibilityRequirements refer to a table at
         // https://github.com/kubernetes-csi/external-provisioner.
         // Our case is WaitForFirstConsumer = true, strict-topology = false.
         //
@@ -321,6 +310,8 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
             Status::invalid_argument(format!("Malformed volume UUID: {}", volume_uuid))
         })?;
 
+        let vt_mapper = VolumeTopologyMapper::init().await?;
+
         // First check if the volume already exists.
         if let Some(existing_volume) = MayastorApiClient::get_client()
             .list_volumes()
@@ -350,8 +341,6 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
             );
         }
 
-        let vt_mapper = VolumeTopologyMapper::init().await?;
-
         let volume = rpc::csi::Volume {
             capacity_bytes: size as i64,
             volume_id: volume_uuid,
@@ -361,7 +350,6 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
         };
 
         debug!("Created volume: {:?}", volume);
-
         Ok(Response::new(CreateVolumeResponse {
             volume: Some(volume),
         }))
@@ -384,6 +372,7 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
                 ))
             })?;
 
+        debug!("Volume {} deleted", &args.volume_id);
         Ok(Response::new(DeleteVolumeResponse {}))
     }
 
@@ -446,17 +435,48 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
                     error!("{}", m);
                     return Err(Status::failed_precondition(m));
                 }
-                let uri = get_volume_share_uri(&volume)?;
-                debug!("Volume {} already published at {}", volume_id, uri);
-                uri
+
+                if let Some((node, uri)) = get_volume_share_location(&volume) {
+                    // Make sure volume is published at the same node.
+                    if node_id != node {
+                        let m = format!(
+                            "Volume {} already published on a different node: {}",
+                            volume_id, node,
+                        );
+                        error!("{}", m);
+                        return Err(Status::failed_precondition(m));
+                    }
+
+                    debug!("Volume {} already published at {}", volume_id, uri);
+                    uri
+                } else {
+                    let m = format!(
+                        "Volume {} reports no info about its publishing status",
+                        volume_id
+                    );
+                    error!("{}", m);
+                    return Err(Status::internal(m));
+                }
             } else {
                 // Volume is not published.
                 let v = MayastorApiClient::get_client()
                     .publish_volume(&volume_id, &node_id, protocol)
                     .await?;
-                let uri = get_volume_share_uri(&v)?;
-                debug!("Volume {} successfully published at {}", volume_id, uri);
-                uri
+
+                if let Some((node, uri)) = get_volume_share_location(&v) {
+                    debug!(
+                        "Volume {} successfully published on node {} via {}",
+                        volume_id, node, uri
+                    );
+                    uri
+                } else {
+                    let m = format!(
+                        "Volume {} has been successfully published but URI is available",
+                        volume_id
+                    );
+                    error!("{}", m);
+                    return Err(Status::internal(m));
+                }
             }
         } else {
             let m = format!("Volume {} is missing current state", volume_id);
@@ -489,13 +509,41 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
         let args = request.into_inner();
 
         debug!("Request to unpublish volume: {:?}", args);
-        // Check if node exists.
+        // Check if target volume exists.
+        let volume = match MayastorApiClient::get_client()
+            .get_volume(&args.volume_id)
+            .await
+        {
+            Ok(volume) => volume,
+            Err(ApiClientError::ResourceNotExists { .. }) => {
+                debug!("Volume {} does not exist, not unpublishing", args.volume_id);
+                return Ok(Response::new(ControllerUnpublishVolumeResponse {}));
+            }
+            Err(e) => return Err(Status::from(e)),
+        };
+
+        // Check if target volume is published and the node matches.
+        if let Some((node, _)) = get_volume_share_location(&volume) {
+            if !args.node_id.is_empty() && node != args.node_id {
+                return Err(Status::not_found(format!(
+                    "Volume {} is published on a different node: {}",
+                    &args.volume_id, node
+                )));
+            }
+        } else {
+            // Volume is not published, bail out.
+            debug!(
+                "Volume {} is not published, not unpublishing",
+                args.volume_id
+            );
+            return Ok(Response::new(ControllerUnpublishVolumeResponse {}));
+        }
 
         MayastorApiClient::get_client()
             .unpublish_volume(&args.volume_id)
             .await
             .map_err(|e| {
-                Status::internal(format!(
+                Status::not_found(format!(
                     "Failed to unpublish volume {}, error = {:?}",
                     &args.volume_id, e
                 ))
@@ -575,7 +623,7 @@ impl rpc::csi::controller_server::Controller for CsiControllerSvc {
             .take(if max_entries > 0 {
                 max_entries as usize
             } else {
-                usize::MAX
+                MAX_VOLUMES_TO_LIST
             })
             .map(|v| {
                 let volume = rpc::csi::Volume {

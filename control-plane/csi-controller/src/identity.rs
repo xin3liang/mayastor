@@ -65,7 +65,7 @@ impl rpc::csi::identity_server::Identity for CsiIdentitySvc {
         // are percieved as precondition failures.
         let ready = match MayastorApiClient::get_client().list_nodes().await {
             Ok(_) => true,
-            Err(ApiClientError::ServerCommunicationError { .. }) => {
+            Err(ApiClientError::ServerCommunication { .. }) => {
                 error!("Failed to access REST API gateway, CSI Controller plugin is not ready",);
                 false
             }

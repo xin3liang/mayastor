@@ -5,7 +5,7 @@ use common_lib::types::v0::openapi::models::{
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::OnceCell;
-use reqwest::{Client, Error, Response, StatusCode, Url};
+use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use tracing::instrument;
@@ -13,16 +13,18 @@ use tracing::instrument;
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApiClientError {
     // Error while communicating with the server.
-    ServerCommunicationError(String),
+    ServerCommunication(String),
     // Requested resource already exists. This error has a dedicated variant
     // in order to handle resource idempotency properly.
     ResourceAlreadyExists(String),
     // No resource instance exists.
     ResourceNotExists(String),
     // Generic operation errors.
-    GenericOperationError(String),
+    GenericOperation(String),
     // Problems with parsing response body.
-    InvalidResponseError(String),
+    InvalidResponse(String),
+    /// URL is malformed.
+    MalformedUrl(String),
 }
 
 static REST_CLIENT: OnceCell<MayastorApiClient> = OnceCell::new();
@@ -34,7 +36,7 @@ mod uri {
     pub const NODES: &str = "nodes";
 }
 
-/// Enum for representing URI.
+/// Struct for representing URI.
 #[derive(Debug)]
 struct UrnType<'a>(&'a [&'a str]);
 
@@ -55,6 +57,13 @@ impl UrnType<'_> {
             }
         }
     }
+
+    /// Transform URI into a full URL based on the given base URL.
+    pub fn get_full_url(&self, base_url: &str) -> Result<Url, ApiClientError> {
+        let u = format!("{}/{}", base_url, self);
+        Url::parse(&u)
+            .map_err(|e| ApiClientError::MalformedUrl(format!("URL parsing error: {:?}", e)))
+    }
 }
 
 impl Display for UrnType<'_> {
@@ -64,7 +73,7 @@ impl Display for UrnType<'_> {
 }
 
 /// Single instance API client for accessing REST API gateway.
-/// Incapsulates communication with REST API by exposing a set of
+/// Encapsulates communication with REST API by exposing a set of
 /// high-level API functions, which perform (de)serialization
 /// of API request/response objects.
 #[derive(Debug)]
@@ -79,6 +88,11 @@ impl MayastorApiClient {
     pub fn initialize(endpoint: String) -> Result<()> {
         if REST_CLIENT.get().is_some() {
             return Err(anyhow!("API client already initialized"));
+        }
+
+        // Make sure endpoint is a well-formed URL.
+        if let Err(u) = Url::parse(&endpoint) {
+            return Err(anyhow!("Invalid API endpoint URL {}: {:?}", endpoint, u));
         }
 
         let rest_client = reqwest::Client::builder()
@@ -116,12 +130,7 @@ impl MayastorApiClient {
     where
         for<'a> R: Deserialize<'a>,
     {
-        let response = self.do_get(&urn).await.map_err(|e| {
-            ApiClientError::ServerCommunicationError(format!(
-                "Failed to get {:?}, error = {}",
-                urn, e
-            ))
-        })?;
+        let response = self.do_get(&urn).await?;
 
         // Check HTTP status code.
         match response.status() {
@@ -134,7 +143,7 @@ impl MayastorApiClient {
                 )));
             }
             http_status => {
-                return Err(ApiClientError::GenericOperationError(format!(
+                return Err(ApiClientError::GenericOperation(format!(
                     "Failed to GET {:?}, HTTP error = {}",
                     urn, http_status,
                 )))
@@ -143,14 +152,14 @@ impl MayastorApiClient {
 
         // Get response body if request succeeded.
         let body = response.bytes().await.map_err(|e| {
-            ApiClientError::InvalidResponseError(format!(
+            ApiClientError::InvalidResponse(format!(
                 "Failed to obtain body from HTTP response while getting {}, error = {}",
                 urn, e,
             ))
         })?;
 
         serde_json::from_slice::<R>(&body).map_err(|e| {
-            ApiClientError::InvalidResponseError(format!(
+            ApiClientError::InvalidResponse(format!(
                 "Failed to deserialize object {}, error = {}",
                 std::any::type_name::<R>(),
                 e
@@ -159,47 +168,57 @@ impl MayastorApiClient {
     }
 
     // Get one resource instance.
-    async fn do_get(&self, urn: &UrnType<'_>) -> Result<Response, Error> {
-        let u = format!("{}/{}", self.base_url, urn);
-        let uri = Url::parse(&u).unwrap();
-
-        self.rest_client.get(uri).send().await
+    async fn do_get(&self, urn: &UrnType<'_>) -> Result<Response, ApiClientError> {
+        self.rest_client
+            .get(urn.get_full_url(&self.base_url)?)
+            .send()
+            .await
+            .map_err(|e| {
+                ApiClientError::ServerCommunication(format!(
+                    "Failed to GET {:?}, error = {}",
+                    urn, e
+                ))
+            })
     }
 
     // Perform resource deletion, optionally idempotent.
     async fn do_delete(&self, urn: &UrnType<'_>, idempotent: bool) -> Result<(), ApiClientError> {
-        let u = format!("{}/{}", self.base_url, urn);
-        let uri = Url::parse(&u).unwrap();
-
-        let response = self.rest_client.delete(uri).send().await.map_err(|e| {
-            ApiClientError::ServerCommunicationError(format!(
-                "DELETE {} request failed, error={}",
-                u, e
-            ))
-        })?;
+        let response = self
+            .rest_client
+            .delete(urn.get_full_url(&self.base_url)?)
+            .send()
+            .await
+            .map_err(|e| {
+                ApiClientError::ServerCommunication(format!(
+                    "DELETE {} request failed, error={}",
+                    urn, e
+                ))
+            })?;
 
         // Check HTTP status code, handle DELETE idempotency transparently.
-        let res = match response.status() {
-            StatusCode::OK => Ok(()),
+        match response.status() {
+            StatusCode::OK => {
+                debug!("Resource {} successfully deleted", urn);
+                Ok(())
+            }
             // Handle idempotency as requested by the caller.
             StatusCode::NOT_FOUND | StatusCode::NO_CONTENT | StatusCode::PRECONDITION_FAILED => {
                 if idempotent {
+                    debug!("Resource {} successfully deleted", urn);
                     Ok(())
                 } else {
                     let (rtype, rname) = urn.classify();
-                    return Err(ApiClientError::ResourceNotExists(format!(
+                    Err(ApiClientError::ResourceNotExists(format!(
                         "{} {} not found",
                         rtype, rname
-                    )));
+                    )))
                 }
             }
-            code => Err(ApiClientError::GenericOperationError(format!(
+            code => Err(ApiClientError::GenericOperation(format!(
                 "DELETE {} failed, HTTP status code = {}",
-                u, code
+                urn, code
             ))),
-        };
-        debug!("Resource {} successfully deleted", u);
-        res
+        }
     }
 
     async fn do_put<I, O>(&self, urn: &UrnType<'_>, object: I) -> Result<O, ApiClientError>
@@ -207,49 +226,47 @@ impl MayastorApiClient {
         I: Serialize + Sized,
         for<'a> O: Deserialize<'a>,
     {
-        let u = format!("{}/{}", self.base_url, urn);
-        let uri = Url::parse(&u).unwrap();
-
         let response = self
             .rest_client
-            .put(uri)
+            .put(urn.get_full_url(&self.base_url)?)
             .json(&object)
             .send()
             .await
             .map_err(|e| {
-                ApiClientError::ServerCommunicationError(format!(
+                ApiClientError::ServerCommunication(format!(
                     "PUT {} request failed, error={}",
-                    u, e
+                    urn, e
                 ))
             })?;
 
         // Check HTTP status of the operation.
+        // TODO: Revisit status codes checks after improving REST API HTTP codes (CAS-1124).
         match response.status() {
             StatusCode::OK => {}
             StatusCode::UNPROCESSABLE_ENTITY => {
                 return Err(ApiClientError::ResourceAlreadyExists(format!(
                     "Resource {} already exists",
-                    u
+                    urn
                 )));
             }
             _ => {
-                return Err(ApiClientError::GenericOperationError(format!(
+                return Err(ApiClientError::GenericOperation(format!(
                     "PUT {} failed, HTTP status = {}",
-                    u,
+                    urn,
                     response.status()
                 )));
             }
         };
 
         let body = response.bytes().await.map_err(|e| {
-            ApiClientError::InvalidResponseError(format!(
+            ApiClientError::InvalidResponse(format!(
                 "Failed to obtain body from HTTP PUT {} response, error = {}",
-                u, e,
+                urn, e,
             ))
         })?;
 
         serde_json::from_slice::<O>(&body).map_err(|e| {
-            ApiClientError::InvalidResponseError(format!(
+            ApiClientError::InvalidResponse(format!(
                 "Failed to deserialize object {}, error = {}",
                 std::any::type_name::<O>(),
                 e
@@ -261,26 +278,15 @@ impl MayastorApiClient {
     where
         for<'a> R: Deserialize<'a>,
     {
-        let body = self
-            .do_get(&urn)
-            .await
-            .map_err(|e| {
-                ApiClientError::ServerCommunicationError(format!(
-                    "Failed to GET {:?}, error = {}",
-                    urn, e
-                ))
-            })?
-            .bytes()
-            .await
-            .map_err(|e| {
-                ApiClientError::InvalidResponseError(format!(
-                    "Failed to obtain body from HTTP response while listing {:?}, error = {}",
-                    urn, e,
-                ))
-            })?;
+        let body = self.do_get(&urn).await?.bytes().await.map_err(|e| {
+            ApiClientError::InvalidResponse(format!(
+                "Failed to obtain body from HTTP response while listing {:?}, error = {}",
+                urn, e,
+            ))
+        })?;
 
         serde_json::from_slice::<Vec<R>>(&body).map_err(|e| {
-            ApiClientError::InvalidResponseError(format!(
+            ApiClientError::InvalidResponse(format!(
                 "Failed to deserialize objects {}, error = {}",
                 std::any::type_name::<R>(),
                 e
@@ -315,13 +321,13 @@ impl MayastorApiClient {
         allowed_nodes: &[String],
         preferred_nodes: &[String],
     ) -> Result<Volume, ApiClientError> {
-        let mut allowed = Vec::new();
-        let mut preferred = Vec::new();
-
-        allowed.extend_from_slice(allowed_nodes);
-        preferred.extend_from_slice(preferred_nodes);
-
-        let topology = Topology::new_all(Some(ExplicitTopology::new(allowed, preferred)), None);
+        let topology = Topology::new_all(
+            Some(ExplicitTopology::new(
+                allowed_nodes.to_vec(),
+                preferred_nodes.to_vec(),
+            )),
+            None,
+        );
 
         let req = CreateVolumeBody {
             replicas,
@@ -344,7 +350,7 @@ impl MayastorApiClient {
     }
 
     #[instrument]
-    /// Describe specific volume.
+    /// Get specific volume.
     pub async fn get_volume(&self, volume_id: &str) -> Result<Volume, ApiClientError> {
         self.get_collection_item(UrnType(&[uri::VOLUMES, volume_id]))
             .await
