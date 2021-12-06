@@ -451,35 +451,38 @@ impl Nexus {
                 }
             }
             DeviceEventType::AdminCommandCompletionFailed => {
-                let cn = &device;
-                for nexus in nexus::instances() {
-                    if nexus_channel::fault_nexus_child(nexus, cn) {
-                        info!(
-                            "{}: retiring child {} in response to admin command completion failure event",
-                            nexus.name,
-                            device,
-                        );
-
-                        let child_dev = device.to_string();
-                        Reactors::master().send_future(async move {
-                            // Error indicates it is already paused and another
-                            // thread is processing the fault
-                            let child_dev2 = child_dev.clone();
-                            if let Err(e) = nexus.child_retire(child_dev).await
-                            {
-                                warn!(
-                                    "retiring child {} returned {}",
-                                    child_dev2, e
-                                );
-                            }
-                        });
-                        return;
-                    }
-                }
-                warn!(
-                    "No nexus child exists for device {}, ignoring admin command completion failure event",
-                    device
-                );
+                warn!("Would have faulted a child but now I won't - what could go wrong? :-)");
+                // let cn = &device;
+                // for nexus in nexus::instances() {
+                //     if nexus_channel::fault_nexus_child(nexus, cn) {
+                //         info!(
+                //             "{}: retiring child {} in response to admin
+                // command completion failure event",
+                //             nexus.name,
+                //             device,
+                //         );
+                //
+                //         let child_dev = device.to_string();
+                //         Reactors::master().send_future(async move {
+                //             // Error indicates it is already paused and
+                // another             // thread is processing
+                // the fault             let child_dev2 =
+                // child_dev.clone();             if let Err(e)
+                // = nexus.child_retire(child_dev).await
+                //             {
+                //                 warn!(
+                //                     "retiring child {} returned {}",
+                //                     child_dev2, e
+                //                 );
+                //             }
+                //         });
+                //         return;
+                //     }
+                // }
+                // warn!(
+                //     "No nexus child exists for device {}, ignoring admin
+                // command completion failure event",     device
+                // );
             }
             _ => {
                 info!("Ignoring {:?} event for device {}", event, device);
