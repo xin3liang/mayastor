@@ -49,7 +49,7 @@ spec:
       serviceAccountName: "default"
       initContainers:
         - name: volume-permissions
-          image: docker.io/bitnami/bitnami-shell:10
+          image: docker.io/xin3liang/bitnami-shell:10
           imagePullPolicy: "Always"
           command:
             - /bin/bash
@@ -66,7 +66,7 @@ spec:
               mountPath: /bitnami/etcd
       containers:
         - name: etcd
-          image: docker.io/bitnami/etcd:3.4.15-debian-10-r43
+          image: docker.io/xin3liang/bitnami-etcd:3.5.1-debian-10-r67
           imagePullPolicy: "IfNotPresent"
           securityContext:
             runAsNonRoot: true

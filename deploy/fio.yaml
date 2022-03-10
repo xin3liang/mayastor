@@ -12,7 +12,7 @@ spec:
        claimName: ms-volume-claim
   containers:
     - name: fio
-      image: mayadata/fio
+      image: xin3liang/e2e-fio
       args:
         - sleep
         - "1000000"
